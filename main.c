@@ -66,11 +66,11 @@ void change_ip_addr(char* pkt, const char* new_src, const char* new_dst, int dst
   udp->uh_dport = htons(dst_port);
 }
 
-int main(int argc, *char argv[]) {
+int main(int argc, char* argv[]) {
   unsigned int cur, i, t_i, is_hostring, recieved;
   int sent = 0, pktsizelen;
-  char *buf, *payload;
-  struct netmap_ring *rxring;
+  char *buf, *payload, *tbuf;
+  struct netmap_ring *rxring, *txring;
   struct pollfd pollfd[1];
   struct ether_header *ether;
   struct ether_arp *arp;
