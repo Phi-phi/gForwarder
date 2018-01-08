@@ -67,7 +67,7 @@ void change_ip_addr(char* pkt, const char* new_src, const char* new_dst, int dst
 }
 
 int main(int argc, char* argv[]) {
-  unsigned int cur, i, t_i, is_hostring, recieved;
+  unsigned int cur, i, t_i, is_hostring;
   int sent = 0, pktsizelen;
   char *buf, *payload, *tbuf;
   struct netmap_ring *rxring, *txring;
@@ -80,10 +80,8 @@ int main(int argc, char* argv[]) {
   nm_desc = nm_open("netmap:ix1*", NULL, 0, NULL);
   for(;;){
     pollfd[0].fd = nm_desc->fd;
-    pollfd[0].events = POLLIN | POLLOUT;
+    pollfd[0].events = POLLIN;
     poll(pollfd, 1, 100);
-
-    recieved = 0;
 
     for (i = nm_desc->first_rx_ring; i <= nm_desc->last_rx_ring; i++) {
 
@@ -91,54 +89,53 @@ int main(int argc, char* argv[]) {
 
       rxring = NETMAP_RXRING(nm_desc->nifp, i);
 
-      while(!nm_ring_empty(rxring)) {
-        recieved = 1;
-        cur = rxring->cur;
-        buf = NETMAP_BUF(rxring, rxring->slot[cur].buf_idx);
-        pktsizelen = rxring->slot[cur].len;
-        ether = (struct ether_header *)buf;
-        if(ntohs(ether->ether_type) == ETHERTYPE_ARP) {
-          printf("This is ARP.\n");
-          arp = (struct ether_arp *)(buf + sizeof(struct ether_header));
+      if(nm_ring_empty(rxring))
+        continue;
 
-          swapto(!is_hostring, &rxring->slot[cur]);
-          rxring->head = rxring->cur = nm_ring_next(rxring, cur);
-          continue;
-        }
-        ip = (struct ip *)(buf + sizeof(struct ether_header));
-        payload = (char *)ip + (ip->ip_hl<<2);
+      cur = rxring->cur;
+      buf = NETMAP_BUF(rxring, rxring->slot[cur].buf_idx);
+      pktsizelen = rxring->slot[cur].len;
 
-        if (ip->ip_p == IPPROTO_UDP) {
-          sent = 0;
-          udp = (struct udphdr *)payload;
-          change_ip_addr(buf, "10.2.2.2", "10.2.2.3", 11233);
+      ether = (struct ether_header *)buf;
 
-          for (t_i = nm_desc->first_tx_ring; t_i < nm_desc->last_tx_ring || sent; ++t_i) {
-            txring = NETMAP_TXRING(nm_desc->nifp, t_i);
-
-            if (nm_ring_empty(txring))
-              continue;
-
-            cur = txring->cur;
-
-            tbuf = NETMAP_BUF(txring, txring->slot[cur].buf_idx);
-
-            nm_pkt_copy(buf, tbuf, pktsizelen);
-            txring->slot[cur].len = pktsizelen;
-            txring->slot[cur].flags |= NS_BUF_CHANGED;
-
-            txring->head = txring->cur = nm_ring_next(txring, cur);
-            sent = 1;
-
-            while(nm_tx_pending(txring)) {
-              ioctl(nm_desc->fd, NIOCTXSYNC, NULL);
-            }
-          }
-        }
+      if(ntohs(ether->ether_type) == ETHERTYPE_ARP) {
+        printf("This is ARP.\n");
+        arp = (struct ether_arp *)(buf + sizeof(struct ether_header));
 
         swapto(!is_hostring, &rxring->slot[cur]);
         rxring->head = rxring->cur = nm_ring_next(rxring, cur);
+        continue;
       }
+      ip = (struct ip *)(buf + sizeof(struct ether_header));
+      payload = (char *)ip + (ip->ip_hl<<2);
+
+      if (ip->ip_p == IPPROTO_UDP) {
+        sent = 0;
+        udp = (struct udphdr *)payload;
+        change_ip_addr(buf, "10.2.2.2", "10.2.2.3", 11233);
+        rxring->slot[cur].flags |= NS_BUF_CHANGED;
+
+        for (t_i = nm_desc->first_tx_ring; t_i < nm_desc->last_tx_ring && !sent; ++t_i) {
+          txring = NETMAP_TXRING(nm_desc->nifp, t_i);
+
+          if (nm_ring_empty(txring))
+            continue;
+
+          cur = txring->cur;
+
+          txring->slot[cur].buf_idx = rxring->slot[cur].buf_idx;
+          txring->slot[cur].len = pktsizelen;
+          txring->slot[cur].flags |= NS_BUF_CHANGED;
+
+          txring->head = txring->cur = nm_ring_next(txring, cur);
+          sent = 1;
+          printf("ok.\n");
+        }
+      } else {
+        swapto(!is_hostring, &rxring->slot[cur]);
+      }
+
+      rxring->head = rxring->cur = nm_ring_next(rxring, cur);
     }
   }
 
