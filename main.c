@@ -15,36 +15,42 @@ struct nm_desc *nm_desc;
 
 void swapto(int to_hostring, struct netmap_slot *rxslot) {
   struct netmap_ring *txring;
-  int i, first, last;
+  int i, first, last, sent = 0;
   uint32_t t, cur;
 
   if (to_hostring) {
     fprintf(stderr, "NIC to HOST\n");
-    first = last = nm_desc->last_tx_ring;
+    first = last = nm_desc->last_tx_ring; // txring is hostring.
   } else {
     fprintf(stderr, "HOST to NIC\n");
     first = nm_desc->first_tx_ring;
     last = nm_desc->last_tx_ring - 1;
   }
 
-  for (i = first; i <= last; ++i) {
+  for (i = first; i <= last && !sent; ++i) {
     txring = NETMAP_TXRING(nm_desc->nifp, i);
-    while(!nm_ring_empty(txring)) {
-      cur = txring->cur;
 
-      t = txring->slot[cur].buf_idx;
-      txring->slot[cur].buf_idx = rxslot->buf_idx;
-      rxslot->buf_idx = t;
-
-      txring->slot[cur].len = rxslot->len;
-
-      txring->slot[cur].flags |= NS_BUF_CHANGED;
-      rxslot->flags |= NS_BUF_CHANGED;
-
-      txring->head = txring->cur = nm_ring_next(txring, cur);
-
-      break;
+    if (nm_ring_empty(txring)) {
+      continue;
     }
+
+    cur = txring->cur;
+
+    if (txring->slot[cur].flags & NS_BUF_CHANGED) {
+      continue;
+    }
+    t = txring->slot[cur].buf_idx;
+    txring->slot[cur].buf_idx = rxslot->buf_idx;
+    rxslot->buf_idx = t;
+
+    txring->slot[cur].len = rxslot->len;
+
+    txring->slot[cur].flags |= NS_BUF_CHANGED;
+    rxslot->flags |= NS_BUF_CHANGED;
+
+    sent = 1;
+
+    txring->head = txring->cur = nm_ring_next(txring, cur);
   }
 }
 
