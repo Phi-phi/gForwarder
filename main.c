@@ -98,22 +98,36 @@ void swapto(int to_hostring, struct netmap_slot *rxslot) {
   }
 }
 
-void change_ip_addr(char* pkt, const char* new_src, const char* new_dst, int dst_port) {
+char* change_ip_by_rule(char* pkt, struct rule_box *rules) {
+  int i, matched = 0;
   struct ip *ip;
   struct udphdr *udp;
+  struct rule_dic *rule_dics = rules->rule_dics;
+
+  ip = (struct ip *)(pkt + sizeof(struct ether_header));
+  udp = (struct udphdr *)(pkt + sizeof(struct ether_header) + (ip->ip_hl<<2));
+
+  for (i = 0; i < rules->rule_num; ++i) {
+    if (ntohl(ip->ip_src.s_addr) == rule_dics[i].srcaddr.s_addr && ntohs(udp->uh_dport) == rule_dics[i].dst_port) {
+      printf("match\n");
+      change_ip_addr(pkt, rule_dics[i].srcaddr);
+      matched = 1;
+      break;
+    }
+  }
+
+  return pkt;
+}
+
+void change_ip_addr(char* pkt, struct in_addr dst) {
+  struct ip *ip;
   struct in_addr src, dst;
 
-  src.s_addr = inet_addr(new_src);
   dst.s_addr = inet_addr(new_dst);
 
   ip = (struct ip *)(pkt + sizeof(struct ether_header));
-  udp = (struct udphdr *)(ip + (ip->ip_hl<<2));
 
-  ip->ip_src = src;
   ip->ip_dst = dst;
-
-  udp->uh_sport = htons(65001);
-  udp->uh_dport = htons(dst_port);
 }
 
 int main(int argc, char* argv[]) {
@@ -215,7 +229,7 @@ int main(int argc, char* argv[]) {
         printHex(buf, pktsizelen);
         sent = 0;
         udp = (struct udphdr *)payload;
-        change_ip_addr(buf, "10.2.2.2", "10.2.2.3", 11233);
+        change_ip_by_rule(buf, rules);
         rxring->slot[r_cur].flags |= NS_BUF_CHANGED;
 
         for (t_i = nm_desc->first_tx_ring; t_i < nm_desc->last_tx_ring && !sent; ++t_i) {
