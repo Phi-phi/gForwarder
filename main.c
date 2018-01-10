@@ -20,7 +20,7 @@ struct nm_desc *nm_desc;
 
 struct rule_dic {
   struct in_addr srcaddr;
-  int srcport;
+  int dstport;
   struct in_addr dstaddr;
   char* priority;
 };
@@ -42,7 +42,7 @@ void printAllRules(struct rule_box *rules) {
     inet_ntop(AF_INET, &rule_dics[i].dstaddr, dst, sizeof(dst));
     printf("\n------------\n");
     printf("src addr: %s\n", src);
-    printf("src port: %d\n", rule_dics[i].srcport);
+    printf("src port: %d\n", rule_dics[i].dstport);
     printf("dst addr: %s\n", dst);
     printf("priority: %s\n", rule_dics[i].priority);
     printf("------------\n");
@@ -98,7 +98,18 @@ void swapto(int to_hostring, struct netmap_slot *rxslot) {
   }
 }
 
-char* change_ip_by_rule(char* pkt, struct rule_box *rules) {
+void change_ip_addr(char* pkt, struct in_addr dst) {
+  struct ip *ip;
+  struct in_addr src;
+
+  ip = (struct ip *)(pkt + sizeof(struct ether_header));
+  src.s_addr = inet_addr("10.2.2.2");
+
+  ip->ip_src = src;
+  ip->ip_dst = dst;
+}
+
+int change_ip_by_rule(char* pkt, struct rule_box *rules) {
   int i, matched = 0;
   struct ip *ip;
   struct udphdr *udp;
@@ -108,7 +119,7 @@ char* change_ip_by_rule(char* pkt, struct rule_box *rules) {
   udp = (struct udphdr *)(pkt + sizeof(struct ether_header) + (ip->ip_hl<<2));
 
   for (i = 0; i < rules->rule_num; ++i) {
-    if (ntohl(ip->ip_src.s_addr) == rule_dics[i].srcaddr.s_addr && ntohs(udp->uh_dport) == rule_dics[i].dst_port) {
+    if (ip->ip_src.s_addr == rule_dics[i].srcaddr.s_addr && ntohs(udp->uh_dport) == rule_dics[i].dstport) {
       printf("match\n");
       change_ip_addr(pkt, rule_dics[i].srcaddr);
       matched = 1;
@@ -116,18 +127,7 @@ char* change_ip_by_rule(char* pkt, struct rule_box *rules) {
     }
   }
 
-  return pkt;
-}
-
-void change_ip_addr(char* pkt, struct in_addr dst) {
-  struct ip *ip;
-  struct in_addr src, dst;
-
-  dst.s_addr = inet_addr(new_dst);
-
-  ip = (struct ip *)(pkt + sizeof(struct ether_header));
-
-  ip->ip_dst = dst;
+  return matched;
 }
 
 int main(int argc, char* argv[]) {
@@ -164,19 +164,15 @@ int main(int argc, char* argv[]) {
         rule_str[str_i - word_start_i] = '\0';
         switch (rule_idx) {
           case 0:
-            printf("src addr '%s'\n", rule_str);
             rule->srcaddr.s_addr = inet_addr(rule_str);
             break;
           case 1:
-            printf("src port '%s'\n", rule_str);
-            rule->srcport = atoi(rule_str);
+            rule->dstport = atoi(rule_str);
             break;
           case 2:
-            printf("dst addr '%s'\n", rule_str);
             rule->dstaddr.s_addr = inet_addr(rule_str);
             break;
           case 3:
-            printf("priority '%s'\n", rule_str);
             rule->priority = rule_str;
             rule_dics[idx++] = *rule;
             break;
@@ -229,24 +225,26 @@ int main(int argc, char* argv[]) {
         printHex(buf, pktsizelen);
         sent = 0;
         udp = (struct udphdr *)payload;
-        change_ip_by_rule(buf, rules);
-        rxring->slot[r_cur].flags |= NS_BUF_CHANGED;
+        if (change_ip_by_rule(buf, rules)) {
+          printHex(buf, pktsizelen);
+          rxring->slot[r_cur].flags |= NS_BUF_CHANGED;
 
-        for (t_i = nm_desc->first_tx_ring; t_i < nm_desc->last_tx_ring && !sent; ++t_i) {
-          txring = NETMAP_TXRING(nm_desc->nifp, t_i);
+          for (t_i = nm_desc->first_tx_ring; t_i < nm_desc->last_tx_ring && !sent; ++t_i) {
+            txring = NETMAP_TXRING(nm_desc->nifp, t_i);
 
-          if (nm_ring_empty(txring))
-            continue;
+            if (nm_ring_empty(txring))
+              continue;
 
-          t_cur = txring->cur;
+            t_cur = txring->cur;
 
-          txring->slot[t_cur].buf_idx = rxring->slot[r_cur].buf_idx;
-          txring->slot[t_cur].len = pktsizelen;
-          txring->slot[t_cur].flags |= NS_BUF_CHANGED;
+            txring->slot[t_cur].buf_idx = rxring->slot[r_cur].buf_idx;
+            txring->slot[t_cur].len = pktsizelen;
+            txring->slot[t_cur].flags |= NS_BUF_CHANGED;
 
-          txring->head = txring->cur = nm_ring_next(txring, t_cur);
-          sent = 1;
-          printf("ok.\n");
+            txring->head = txring->cur = nm_ring_next(txring, t_cur);
+            sent = 1;
+            printf("ok.\n");
+          }
         }
       } else {
         if (ntohs(ether->ether_type) > 0) {
