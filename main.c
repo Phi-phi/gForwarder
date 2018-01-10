@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <poll.h>
 #define NETMAP_WITH_LIBS
 #include <net/netmap_user.h>
@@ -11,7 +12,39 @@
 #include <arpa/inet.h>
 #include <sys/time.h>
 
+#define CONFIG_FILE "config.txt"
+#define MAX_LINE 1024
+#define MAX_STR 128
+
 struct nm_desc *nm_desc;
+
+struct rule_dic {
+  struct in_addr srcaddr;
+  int srcport;
+  struct in_addr dstaddr;
+  char* priority;
+}
+
+struct rule_box {
+  struct rule_dic *rule_dics[];
+  size_t rule_num;
+}
+
+void printAllRules(struct rule_box *rules) {
+  int i;
+  char src[32], dst[32];
+  struct rule_dic *rule_dics = rules->rule_dics;
+
+  for (i = 0; i < rules->rule_num; ++i) {
+    inet_ntop(AF_INET, rule_dics[i]->srcaddr, src, sizeof(src));
+    inet_ntop(AF_INET, rule_dics[i]->dstaddr, dst, sizeof(dst));
+    printf("\n------------\n");
+    printf("src addr: %s\n", src);
+    printf("src port: %d\n", rule_dics[i]->srcport);
+    printf("dst addr: %s\n", dst);
+    printf("priority: %s\n", rule_dics[i]->priority);
+  }
+}
 
 void printHex(char* buf, size_t len) {
   int i;
@@ -82,14 +115,60 @@ void change_ip_addr(char* pkt, const char* new_src, const char* new_dst, int dst
 
 int main(int argc, char* argv[]) {
   unsigned int r_cur, t_cur, i, t_i, is_hostring;
-  int sent = 0, pktsizelen;
+  int sent = 0, pktsizelen, conf_num = 0, idx = 0, rule_num = 0;
   char *buf, *payload, *tbuf;
+  char conf_buf[MAX_STR];
+  struct rule_box *rules;
+  struct rule_dic *rule_dics[MAX_LINE];
   struct netmap_ring *rxring, *txring;
   struct pollfd pollfd[1];
   struct ether_header *ether;
   struct ether_arp *arp;
   struct ip *ip;
   struct udphdr *udp;
+  FILE *conf;
+
+  /* config file loading */
+  if ((conf = fopen(CONFIG_FILE, "r")) == NULL) {
+    printf("Config load error.\n");
+    exit(-1);
+  }
+
+  while(fgets(conf_buf, MAX_LINE, conf) != NULL) {
+    int line_len = strlen(conf_buf);
+    int str_i, word_start_i = 0, rule_idx = 0;
+    char rule_str[64];
+    struct rule_dic *rule;
+    for (str_i = 0; str_i < line_len; ++str_i) {
+      if (strcmp(conf_buf[str_i], ' ')) {
+        strncpy(rule_str, conf_buf + word_start_i, str_i - word_start_i);
+        rule_str[str_i - word_start_i] = '\0';
+        switch (rule_idx % 4) {
+          case 0:
+            rule->srcaddr.s_addr = inet_addr(rule_str);
+            break;
+          case 1:
+            rule->srcport = atoi(rule_str);
+            break;
+          case 2:
+            rule->dstaddr.s_addr = inet_addr(rule_str);
+            break;
+          case 3:
+            rule->priority = rule_str;
+            rule_dics[idx++] = rule;
+            break;
+        }
+        ++rule_idx;
+        word_start_i = str_i + 1;
+      }
+    }
+    ++rule_num;
+  }
+
+  rules->rule_dics = rule_dics;
+  rules->rule_num = rule_num;
+
+  printAllRules(rules);
 
   nm_desc = nm_open("netmap:ix1*", NULL, 0, NULL);
   for(;;){
