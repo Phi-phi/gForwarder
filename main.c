@@ -100,13 +100,34 @@ void swapto(int to_hostring, struct netmap_slot *rxslot) {
 
 void change_ip_addr(char* pkt, struct in_addr dst) {
   struct ip *ip;
+  struct ether_header *ether;
+  struct udphdr *udp;
   struct in_addr src;
 
+  ether = (struct ether_header *)pkt;
   ip = (struct ip *)(pkt + sizeof(struct ether_header));
+  udp = (struct udphdr *)(pkt + sizeof(struct ether_header) + (ip->ip_hl<<2));
   src.s_addr = inet_addr("10.2.2.2");
+
+  //90:e2:ba:92:cb:d5
+  ether->ether_shost[0] = 0x90;
+  ether->ether_shost[1] = 0xe2;
+  ether->ether_shost[2] = 0xba;
+  ether->ether_shost[3] = 0x92;
+  ether->ether_shost[4] = 0xcb;
+  ether->ether_shost[5] = 0xd5;
+  // 90:e2:ba:5d:8f:cd
+  ether->ether_dhost[0] = 0x90;
+  ether->ether_dhost[1] = 0xe2;
+  ether->ether_dhost[2] = 0xba;
+  ether->ether_dhost[3] = 0x5d;
+  ether->ether_dhost[4] = 0x8f;
+  ether->ether_dhost[5] = 0xcd;
 
   ip->ip_src = src;
   ip->ip_dst = dst;
+
+  udp->uh_sum = 0;
 }
 
 int change_ip_by_rule(char* pkt, struct rule_box *rules) {
