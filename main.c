@@ -216,7 +216,7 @@ int main(int argc, char* argv[]) {
 
   printAllRules(rules);
 
-  nm_desc = nm_open("netmap:ix1*", NULL, 0, NULL);
+  nm_desc = nm_open("netmap:ix0*", NULL, 0, NULL);
   for(;;){
     pollfd[0].fd = nm_desc->fd;
     pollfd[0].events = POLLIN;
