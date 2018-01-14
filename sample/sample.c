@@ -166,7 +166,11 @@ int main(int argc, char* argv[]) {
           cur = txring->cur;
 
           buf = NETMAP_BUF(txring, txring->slot[cur].buf_idx);
-          nm_pkt_copy(pkt, buf, pktsizelen);
+          if (sent % 2) {
+            nm_pkt_copy(pkt, buf, pktsizelen);
+          } else {
+            nm_pkt_copy(pkt2, buf, pktsizelen);
+          }
           txring->slot[cur].len = pktsizelen;
           txring->slot[cur].flags |= NS_BUF_CHANGED;
 
