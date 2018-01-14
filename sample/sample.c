@@ -1,3 +1,7 @@
+/*
+   read NetFlow pcap file and sending
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +20,7 @@ struct nm_desc *nm_desc;
 
 void swapto(int to_hostring, struct netmap_slot *rxslot) {
   struct netmap_ring *txring;
-  int i, first, last, sent = 0;;
+  int i, first, last, sent = 0;
   uint32_t t, cur;
 
   if (to_hostring) {
@@ -104,11 +108,24 @@ void swap_udp_port(char* pkt) {
   }
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+  int pktsizelen, count_num = 0, sent = 0, send_num, eternal = 0;
+  unsigned int cur, i;
   char *errbuf = NULL;
-  char *pkt;
-  struct pcap_pkthdr *header
+  char *pkt, *pkt2, *buf;
+  struct pcap_pkthdr *header;
+  struct netmap_ring *txring;
+  struct pollfd pollfd[1];
 
+  send_num = atoi(argv[1]);
+  if (send_num == 0) {
+    eternal = 1;
+  } else if (send_num < 0) {
+    printf("send num error.\n");
+    exit(-1);
+  }
+
+  // prepare for packet
   pcap_t *pcap = pcap_open_offline("netflow-pcap.pcap", errbuf);
 
   if (pcap == NULL) {
@@ -116,17 +133,50 @@ int main() {
     exit(-1);
   }
 
-  if (pcap_loop(pcap, 0, send_packet, NULL) < 0) {
-    printf("pcap loop error\n");
-    exit(-1);
+  while ((pkt = pcap_next(pcap, header)) == NULL) {
   }
 
-  while((pkt = pcap_next(pcap, header)) == NULL) {
-  }
-
+  pktsizelen = header->len;
   change_ip_addr(pkt);
+  pkt2 = (char*)malloc(pktsizelen);
+  strcpy(pkt2, pkt);
+  swap_udp_port(pkt2);
 
+  nm_desc = nm_open("netmap:ix1");
+  pollfd[0].fd = nm_desc->fd;
+  pollfd[0].events = POLLOUT;
 
-  printf("capture finish.\n");
+  while (1) {
+    poll(pollfd, 1, -1);
+
+    while (eternal || sent < send_num) {
+      for (i = nm_desc->first_tx_ring; i<= nm_desc->last_tx_ring && sent < send_num; ++i) {
+        txring = NETMAP_TXRING(nm_desc->nifp, i);
+
+        while(!nm_ring_empty(txring) && sent < send_num) {
+          cur = txring->cur;
+
+          buf = NETMAP_BUF(txring, txring->slot[cur].buf_idx);
+          nm_pkt_copy(pkt, buf, pktsizelen);
+          txring->slot[cur].len = pktsizelen;
+          txring->slot[cur].flags |= NS_BUF_CHANGED;
+
+          txring->head = txring->cur = nm_ring_next(txring, cur);
+          ++sent;
+        }
+
+        if (sent < send) {
+          while(nm_tx_pending(txring)) {
+            ioctl(nm_desc->fd, NIOCTXSYNG, NULL);
+          }
+        }
+      }
+    }
+    if (sent >= send_num) {
+      break;
+    }
+  }
+
+  nm_close(nm_desc);
   return 0;
 }
