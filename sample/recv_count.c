@@ -64,12 +64,11 @@ int main(int argc, char* argv[]) {
   struct netmap_ring *rxring;
   struct pollfd pollfd[1];
   struct ether_header *ether;
-  struct ether_arp *arp;
   struct ip *ip;
-  struct udphdr *udp;
 
   nm_desc = nm_open("netmap:ix0*", NULL, 0, NULL);
   printf("counting udp\n");
+  printf("0\n");
   for(;;){
     pollfd[0].fd = nm_desc->fd;
     pollfd[0].events = POLLIN;
@@ -95,8 +94,7 @@ int main(int argc, char* argv[]) {
 
         if (ip->ip_p == IPPROTO_UDP) {
           ++recv_num;
-          printf("%c[2K", 27);
-          printf("%d\n", recv_num);
+          printf("\b\b%d\n", recv_num);
         }
 
         swapto(!is_hostring, &rxring->slot[cur]);
