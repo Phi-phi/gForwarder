@@ -63,10 +63,14 @@ void swapto(int to_hostring, struct netmap_slot *rxslot) {
   uint32_t t, cur;
 
   if (to_hostring) {
+#ifdef DEBUG
     fprintf(stderr, "NIC to HOST\n");
+#endif
     first = last = nm_desc->last_tx_ring;
   } else {
+#ifdef DEBUG
     fprintf(stderr, "HOST to NIC\n");
+#endif
     first = nm_desc->first_tx_ring;
     last = nm_desc->last_tx_ring - 1;
   }
@@ -141,7 +145,9 @@ int change_ip_by_rule(char* pkt, struct rule_box *rules) {
 
   for (i = 0; i < rules->rule_num; ++i) {
     if (ip->ip_src.s_addr == rule_dics[i].srcaddr.s_addr && ntohs(udp->uh_dport) == rule_dics[i].dstport) {
+#ifdef DEBUG
       printf("match\n");
+#endif
       change_ip_addr(pkt, rule_dics[i].srcaddr);
       matched = 1;
       break;
@@ -232,7 +238,9 @@ int main(int argc, char* argv[]) {
       ether = (struct ether_header *)buf;
 
       if(ntohs(ether->ether_type) == ETHERTYPE_ARP) {
+#ifdef DEBUG
         printf("This is ARP.\n");
+#endif
         arp = (struct ether_arp *)(buf + sizeof(struct ether_header));
 
         swapto(!is_hostring, &rxring->slot[r_cur]);
@@ -243,11 +251,12 @@ int main(int argc, char* argv[]) {
       payload = (char *)ip + (ip->ip_hl<<2);
 
       if (ip->ip_p == IPPROTO_UDP) {
+#ifdef DEBUG
         printHex(buf, pktsizelen);
+#endif
         sent = 0;
         udp = (struct udphdr *)payload;
         if (change_ip_by_rule(buf, rules)) {
-          printHex(buf, pktsizelen);
           rxring->slot[r_cur].flags |= NS_BUF_CHANGED;
 
           for (t_i = nm_desc->first_tx_ring; t_i < nm_desc->last_tx_ring && !sent; ++t_i) {
@@ -264,7 +273,9 @@ int main(int argc, char* argv[]) {
 
             txring->head = txring->cur = nm_ring_next(txring, t_cur);
             sent = 1;
+#ifdef DEBUG
             printf("ok.\n");
+#endif
           }
         }
       } else {
@@ -277,6 +288,7 @@ int main(int argc, char* argv[]) {
       }
 
       rxring->head = rxring->cur = nm_ring_next(rxring, r_cur);
+      swapto(!is_hostring, &rxring->slot[r_cur]);
     }
   }
 
