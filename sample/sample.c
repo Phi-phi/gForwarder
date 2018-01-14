@@ -65,8 +65,8 @@ void change_ip_addr(char* pkt, const char *dst_addr) {
   struct udphdr *udp;
   struct in_addr src, dst;
 
-  src.in_addr = inet_addr("10.2.2.2");
-  dst.in_addr = inet_addr(dst_addr);
+  src.s_addr = inet_addr("10.2.2.6");
+  dst.s_addr = inet_addr(dst_addr);
 
   ether = (struct ether_header *)pkt;
   ip = (struct ip *)(pkt + sizeof(struct ether_header));
@@ -109,11 +109,13 @@ void swap_udp_port(char* pkt) {
 }
 
 int main(int argc, char* argv[]) {
-  int pktsizelen, count_num = 0, sent = 0, send_num, eternal = 0;
+  int pktsizelen, sent = 0, send_num, eternal = 0;
   unsigned int cur, i;
   char *errbuf = NULL;
+  const u_char* r_pkt;
+  pcap_t *pcap;
   char *pkt, *pkt2, *buf;
-  struct pcap_pkthdr *header;
+  struct pcap_pkthdr *header = NULL;
   struct netmap_ring *txring;
   struct pollfd pollfd[1];
 
@@ -126,23 +128,30 @@ int main(int argc, char* argv[]) {
   }
 
   // prepare for packet
-  pcap_t *pcap = pcap_open_offline("netflow-pcap.pcap", errbuf);
+  pcap = pcap_open_offline("netflow-pcap.pcap", errbuf);
 
   if (pcap == NULL) {
     printf("pcap load fail.\n");
     exit(-1);
   }
 
-  while ((pkt = pcap_next(pcap, header)) == NULL) {
-  }
+  pcap_next_ex(pcap, &header, &r_pkt);
 
   pktsizelen = header->len;
-  change_ip_addr(pkt);
+
+  pkt = (char*)malloc(pktsizelen);
   pkt2 = (char*)malloc(pktsizelen);
-  strcpy(pkt2, pkt);
+
+  memcpy(pkt, r_pkt, pktsizelen);
+
+  change_ip_addr(pkt, "10.2.2.2");
+  strcpy(pkt2, (const char*)r_pkt);
   swap_udp_port(pkt2);
 
-  nm_desc = nm_open("netmap:ix1");
+  nm_desc = nm_open("netmap:ix1", NULL, 0, NULL);
+
+  ioctl(nm_desc->fd, NIOCTXSYNC, NULL);
+
   pollfd[0].fd = nm_desc->fd;
   pollfd[0].events = POLLOUT;
 
@@ -150,10 +159,10 @@ int main(int argc, char* argv[]) {
     poll(pollfd, 1, -1);
 
     while (eternal || sent < send_num) {
-      for (i = nm_desc->first_tx_ring; i<= nm_desc->last_tx_ring && sent < send_num; ++i) {
+      for (i = nm_desc->first_tx_ring; i<= nm_desc->last_tx_ring && (eternal || sent < send_num); ++i) {
         txring = NETMAP_TXRING(nm_desc->nifp, i);
 
-        while(!nm_ring_empty(txring) && sent < send_num) {
+        while(!nm_ring_empty(txring) && (sent < send_num || eternal)) {
           cur = txring->cur;
 
           buf = NETMAP_BUF(txring, txring->slot[cur].buf_idx);
@@ -165,15 +174,10 @@ int main(int argc, char* argv[]) {
           ++sent;
         }
 
-        if (sent < send) {
-          while(nm_tx_pending(txring)) {
-            ioctl(nm_desc->fd, NIOCTXSYNG, NULL);
-          }
+        while(nm_tx_pending(txring)) {
+          ioctl(nm_desc->fd, NIOCTXSYNC, NULL);
         }
       }
-    }
-    if (sent >= send_num) {
-      break;
     }
   }
 
