@@ -59,7 +59,7 @@ void swapto(int to_hostring, struct netmap_slot *rxslot) {
 }
 
 int main(int argc, char* argv[]) {
-  unsigned int cur, i, is_hostring, recieved, recv_num = 0;
+  unsigned int cur, i, is_hostring, bi, recv_num = 0;
   char *buf, *payload;
   struct netmap_ring *rxring;
   struct pollfd pollfd[1];
@@ -68,7 +68,8 @@ int main(int argc, char* argv[]) {
 
   nm_desc = nm_open("netmap:ix0*", NULL, 0, NULL);
   printf("counting udp\n");
-  printf("0\n");
+  printf("%9d",0);
+  fflush(stdout);
   for(;;){
     pollfd[0].fd = nm_desc->fd;
     pollfd[0].events = POLLIN;
@@ -94,13 +95,17 @@ int main(int argc, char* argv[]) {
 
         if (ip->ip_p == IPPROTO_UDP) {
           ++recv_num;
-          printf("\b\b%d\n", recv_num);
         }
 
         swapto(!is_hostring, &rxring->slot[cur]);
         rxring->head = rxring->cur = nm_ring_next(rxring, cur);
       }
     }
+    for (bi = 0; bi < 9; ++bi) {
+      printf("\b");
+    }
+    printf("%9d", recv_num);
+    fflush(stdout);
     if (ioctl(nm_desc->fd, NIOCRXSYNC, NULL) != 0)
       perror("sync ioctl");
   }

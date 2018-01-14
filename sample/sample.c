@@ -109,7 +109,7 @@ void swap_udp_port(char* pkt) {
 }
 
 int main(int argc, char* argv[]) {
-  int pktsizelen, sent = 0, send_num, eternal = 0;
+  int pktsizelen, sent = 0, send_num, eternal = 0, comp = 0;
   unsigned int cur, i;
   char *errbuf = NULL;
   const u_char* r_pkt;
@@ -183,6 +183,11 @@ int main(int argc, char* argv[]) {
           ioctl(nm_desc->fd, NIOCTXSYNC, NULL);
         }
       }
+    }
+
+    if (sent >= send_num && !comp) {
+      printf("complete\n");
+      comp = 1;
     }
   }
 
