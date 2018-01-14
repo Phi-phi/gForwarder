@@ -143,9 +143,10 @@ int main(int argc, char* argv[]) {
   pkt2 = (char*)malloc(pktsizelen);
 
   memcpy(pkt, r_pkt, pktsizelen);
+  memcpy(pkt2, r_pkt, pktsizelen);
 
   change_ip_addr(pkt, "10.2.2.2");
-  strcpy(pkt2, (const char*)r_pkt);
+  change_ip_addr(pkt2, "10.2.2.2");
   swap_udp_port(pkt2);
 
   nm_desc = nm_open("netmap:ix1", NULL, 0, NULL);
