@@ -15,8 +15,25 @@
 #include <arpa/inet.h>
 #include <sys/time.h>
 #include <pcap.h>
+#include <signal.h>
 
 struct nm_desc *nm_desc;
+
+static int caught_signal = 0;
+
+void sigcatch(int sig) {
+  if (sig == SIGINT) {
+    printf("Ctrl-C interruped\n");
+    caught_signal = 1;
+  }
+}
+
+void set_signal(int sig) {
+  if(signal(sig, sigcatch) == SIG_ERR) {
+    perror("signal");
+    exit(-1);
+  }
+}
 
 void swapto(int to_hostring, struct netmap_slot *rxslot) {
   struct netmap_ring *txring;
@@ -65,7 +82,7 @@ void change_ip_addr(char* pkt, const char *dst_addr) {
   struct udphdr *udp;
   struct in_addr src, dst;
 
-  src.s_addr = inet_addr("10.2.2.6");
+  src.s_addr = inet_addr("10.2.3.3");
   dst.s_addr = inet_addr(dst_addr);
 
   ether = (struct ether_header *)pkt;
@@ -76,16 +93,16 @@ void change_ip_addr(char* pkt, const char *dst_addr) {
   ether->ether_shost[0] = 0x90;
   ether->ether_shost[1] = 0xe2;
   ether->ether_shost[2] = 0xba;
-  ether->ether_shost[3] = 0x92;
-  ether->ether_shost[4] = 0xcb;
-  ether->ether_shost[5] = 0xd5;
+  ether->ether_shost[3] = 0x5d;
+  ether->ether_shost[4] = 0x91;
+  ether->ether_shost[5] = 0xd0;
   // 90:e2:ba:5d:8f:cd
   ether->ether_dhost[0] = 0x90;
   ether->ether_dhost[1] = 0xe2;
   ether->ether_dhost[2] = 0xba;
-  ether->ether_dhost[3] = 0x5d;
-  ether->ether_dhost[4] = 0x8f;
-  ether->ether_dhost[5] = 0xcd;
+  ether->ether_dhost[3] = 0x92;
+  ether->ether_dhost[4] = 0xcb;
+  ether->ether_dhost[5] = 0xd5;
 
   ip->ip_src = src;
   ip->ip_dst = dst;
@@ -145,16 +162,18 @@ int main(int argc, char* argv[]) {
   memcpy(pkt, r_pkt, pktsizelen);
   memcpy(pkt2, r_pkt, pktsizelen);
 
-  change_ip_addr(pkt, "10.2.2.2");
-  change_ip_addr(pkt2, "10.2.2.2");
+  change_ip_addr(pkt, "10.2.3.2");
+  change_ip_addr(pkt2, "10.2.3.2");
   swap_udp_port(pkt2);
 
-  nm_desc = nm_open("netmap:ix1", NULL, 0, NULL);
+  nm_desc = nm_open("netmap:ix0", NULL, 0, NULL);
 
   ioctl(nm_desc->fd, NIOCTXSYNC, NULL);
 
   pollfd[0].fd = nm_desc->fd;
   pollfd[0].events = POLLOUT;
+
+  set_signal(SIGINT);
 
   while (1) {
     poll(pollfd, 1, -1);
@@ -177,6 +196,19 @@ int main(int argc, char* argv[]) {
 
           txring->head = txring->cur = nm_ring_next(txring, cur);
           ++sent;
+
+          if (caught_signal) {
+            printf("caught!\n");
+            while(nm_tx_pending(txring)) {
+              printf("pending...\n");
+              ioctl(nm_desc->fd, NIOCTXSYNC, NULL);
+            }
+            eternal = 0;
+            printf("complete\n");
+            printf("sent: %d\n", sent);
+            exit(0);
+            break;
+          }
         }
 
         while(nm_tx_pending(txring)) {
@@ -185,9 +217,16 @@ int main(int argc, char* argv[]) {
       }
     }
 
-    if (sent >= send_num && !comp) {
+    if (!caught_signal && sent >= send_num && !comp) {
       printf("complete\n");
+      printf("sent: %d\n", sent);
+      sleep(2);
+      break;
       comp = 1;
+    }
+    if (caught_signal) {
+      sleep(2);
+      break;
     }
   }
 
