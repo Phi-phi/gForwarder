@@ -16,7 +16,7 @@
 #define MAX_LINE 1024
 #define MAX_STR 128
 
-struct nm_desc *nm_desc;
+struct nm_desc *nm_desc_rx, *nm_desc_tx;
 
 struct rule_dic {
   struct in_addr srcaddr;
@@ -57,7 +57,7 @@ void printHex(char* buf, size_t len) {
   printf("\n");
 }
 
-void swapto(int to_hostring, struct netmap_slot *rxslot) {
+void swapto(struct nm_desc *desc, int to_hostring, struct netmap_slot *rxslot) {
   struct netmap_ring *txring;
   int i, first, last, sent = 0;;
   uint32_t t, cur;
@@ -66,17 +66,17 @@ void swapto(int to_hostring, struct netmap_slot *rxslot) {
 #ifdef DEBUG
     fprintf(stderr, "NIC to HOST\n");
 #endif
-    first = last = nm_desc->last_tx_ring;
+    first = last = desc->last_tx_ring;
   } else {
 #ifdef DEBUG
     fprintf(stderr, "HOST to NIC\n");
 #endif
-    first = nm_desc->first_tx_ring;
-    last = nm_desc->last_tx_ring - 1;
+    first = desc->first_tx_ring;
+    last = desc->last_tx_ring - 1;
   }
 
   for (i = first; i <= last && !sent; ++i) {
-    txring = NETMAP_TXRING(nm_desc->nifp, i);
+    txring = NETMAP_TXRING(desc->nifp, i);
     while(!nm_ring_empty(txring)) {
       cur = txring->cur;
 
@@ -111,7 +111,6 @@ void change_ip_addr(char* pkt, struct in_addr dst) {
   ether = (struct ether_header *)pkt;
   ip = (struct ip *)(pkt + sizeof(struct ether_header));
   udp = (struct udphdr *)(pkt + sizeof(struct ether_header) + (ip->ip_hl<<2));
-  src.s_addr = inet_addr("10.2.2.2");
 
   //90:e2:ba:92:cb:d5
   ether->ether_shost[0] = 0x90;
@@ -128,7 +127,6 @@ void change_ip_addr(char* pkt, struct in_addr dst) {
   ether->ether_dhost[4] = 0x8f;
   ether->ether_dhost[5] = 0xcd;
 
-  ip->ip_src = src;
   ip->ip_dst = dst;
 
   udp->uh_sum = 0;
@@ -158,7 +156,7 @@ int change_ip_by_rule(char* pkt, struct rule_box *rules) {
 }
 
 int main(int argc, char* argv[]) {
-  unsigned int r_cur, t_cur, i, t_i, is_hostring;
+  unsigned int r_cur, t_cur, i, t_i, is_hostring, t_buf_i;
   int sent = 0, pktsizelen, idx = 0, rule_num = 0;
   char *buf, *payload;
   char conf_buf[MAX_STR];
@@ -216,17 +214,18 @@ int main(int argc, char* argv[]) {
 
   printAllRules(rules);
 
-  nm_desc = nm_open("netmap:ix0*", NULL, 0, NULL);
+  nm_desc_rx = nm_open("netmap:ix1*", NULL, 0, NULL);
+  nm_desc_tx = nm_open("netmap:ix0", NULL, NM_OPEN_NO_MMAP, nm_desc_rx);
   for(;;){
     pollfd[0].fd = nm_desc->fd;
     pollfd[0].events = POLLIN;
     poll(pollfd, 1, 100);
 
-    for (i = nm_desc->first_rx_ring; i <= nm_desc->last_rx_ring; i++) {
+    for (i = nm_desc_rx->first_rx_ring; i <= nm_desc_rx->last_rx_ring; i++) {
 
-      is_hostring = (i == nm_desc->last_rx_ring);
+      is_hostring = (i == nm_desc_rx->last_rx_ring);
 
-      rxring = NETMAP_RXRING(nm_desc->nifp, i);
+      rxring = NETMAP_RXRING(nm_desc_rx->nifp, i);
 
       if(nm_ring_empty(rxring))
         continue;
@@ -243,7 +242,7 @@ int main(int argc, char* argv[]) {
 #endif
         arp = (struct ether_arp *)(buf + sizeof(struct ether_header));
 
-        swapto(!is_hostring, &rxring->slot[r_cur]);
+        swapto(nm_desc_rx, !is_hostring, &rxring->slot[r_cur]);
         rxring->head = rxring->cur = nm_ring_next(rxring, r_cur);
         continue;
       }
@@ -257,19 +256,22 @@ int main(int argc, char* argv[]) {
         sent = 0;
         udp = (struct udphdr *)payload;
         if (change_ip_by_rule(buf, rules)) {
-          rxring->slot[r_cur].flags |= NS_BUF_CHANGED;
-
-          for (t_i = nm_desc->first_tx_ring; t_i < nm_desc->last_tx_ring && !sent; ++t_i) {
-            txring = NETMAP_TXRING(nm_desc->nifp, t_i);
+          for (t_i = nm_desc_tx->first_tx_ring; t_i <= nm_desc_tx->last_tx_ring && !sent; ++t_i) {
+            txring = NETMAP_TXRING(nm_desc_tx->nifp, t_i);
 
             if (nm_ring_empty(txring))
               continue;
 
             t_cur = txring->cur;
 
+            t_buf_i = txring->slot[t_cur].buf_idx;
+
             txring->slot[t_cur].buf_idx = rxring->slot[r_cur].buf_idx;
             txring->slot[t_cur].len = pktsizelen;
             txring->slot[t_cur].flags |= NS_BUF_CHANGED;
+
+            rxring->slot[r_cur].buf_idx = t_buf_i;
+            rxring->slot[r_cur].flags = NS_BUF_CHANGED;
 
             txring->head = txring->cur = nm_ring_next(txring, t_cur);
             sent = 1;
@@ -278,17 +280,10 @@ int main(int argc, char* argv[]) {
 #endif
           }
         }
-      } else {
-        if (ntohs(ether->ether_type) > 0) {
-          swapto(!is_hostring, &rxring->slot[r_cur]);
-        } else {
-          printf("blank pkt\n");
-          printHex(buf, pktsizelen);
-        }
       }
 
       rxring->head = rxring->cur = nm_ring_next(rxring, r_cur);
-      swapto(!is_hostring, &rxring->slot[r_cur]);
+      swapto(nm_desc_rx, !is_hostring, &rxring->slot[r_cur]);
     }
   }
 
