@@ -165,7 +165,6 @@ int main(int argc, char* argv[]) {
   struct netmap_ring *rxring, *txring;
   struct pollfd pollfd[2];
   struct ether_header *ether;
-  struct ether_arp *arp;
   struct ip *ip;
   struct udphdr *udp;
   FILE *conf;
@@ -216,7 +215,7 @@ int main(int argc, char* argv[]) {
 
   nm_desc_rx = nm_open("netmap:ix1*", NULL, 0, NULL);
   nm_desc_tx = nm_open("netmap:ix0", NULL, NM_OPEN_NO_MMAP, nm_desc_rx);
-  for(;;){
+  for (;;) {
     pollfd[0].fd = nm_desc_rx->fd;
     pollfd[0].events = POLLIN;
     pollfd[1].fd = nm_desc_tx->fd;
@@ -229,63 +228,61 @@ int main(int argc, char* argv[]) {
 
       rxring = NETMAP_RXRING(nm_desc_rx->nifp, i);
 
-      if(nm_ring_empty(rxring))
-        continue;
+      while(!nm_ring_empty(rxring)) {
 
-      r_cur = rxring->cur;
-      buf = NETMAP_BUF(rxring, rxring->slot[r_cur].buf_idx);
-      pktsizelen = rxring->slot[r_cur].len;
+        r_cur = rxring->cur;
+        buf = NETMAP_BUF(rxring, rxring->slot[r_cur].buf_idx);
+        pktsizelen = rxring->slot[r_cur].len;
 
-      ether = (struct ether_header *)buf;
+        ether = (struct ether_header *)buf;
 
-      if(ntohs(ether->ether_type) == ETHERTYPE_ARP) {
+        if(ntohs(ether->ether_type) == ETHERTYPE_ARP) {
 #ifdef DEBUG
-        printf("This is ARP.\n");
+          printf("This is ARP.\n");
 #endif
-        arp = (struct ether_arp *)(buf + sizeof(struct ether_header));
+          swapto(nm_desc_rx, !is_hostring, &rxring->slot[r_cur]);
+          rxring->head = rxring->cur = nm_ring_next(rxring, r_cur);
+          continue;
+        }
+        ip = (struct ip *)(buf + sizeof(struct ether_header));
+        payload = (char *)ip + (ip->ip_hl<<2);
 
-        swapto(nm_desc_rx, !is_hostring, &rxring->slot[r_cur]);
-        rxring->head = rxring->cur = nm_ring_next(rxring, r_cur);
-        continue;
-      }
-      ip = (struct ip *)(buf + sizeof(struct ether_header));
-      payload = (char *)ip + (ip->ip_hl<<2);
-
-      if (ip->ip_p == IPPROTO_UDP) {
+        if (ip->ip_p == IPPROTO_UDP) {
 #ifdef DEBUG
-        printHex(buf, pktsizelen);
+          printHex(buf, pktsizelen);
 #endif
-        sent = 0;
-        udp = (struct udphdr *)payload;
-        if (change_ip_by_rule(buf, rules)) {
-          for (t_i = nm_desc_tx->first_tx_ring; t_i <= nm_desc_tx->last_tx_ring && !sent; ++t_i) {
-            txring = NETMAP_TXRING(nm_desc_tx->nifp, t_i);
+          sent = 0;
+          udp = (struct udphdr *)payload;
+          if (change_ip_by_rule(buf, rules)) {
+            for (t_i = nm_desc_tx->first_tx_ring; t_i <= nm_desc_tx->last_tx_ring && !sent; ++t_i) {
+              txring = NETMAP_TXRING(nm_desc_tx->nifp, t_i);
 
-            if (nm_ring_empty(txring))
-              continue;
+              if (nm_ring_empty(txring))
+                continue;
 
-            t_cur = txring->cur;
+              t_cur = txring->cur;
 
-            t_buf_i = txring->slot[t_cur].buf_idx;
+              t_buf_i = txring->slot[t_cur].buf_idx;
 
-            txring->slot[t_cur].buf_idx = rxring->slot[r_cur].buf_idx;
-            txring->slot[t_cur].len = pktsizelen;
-            txring->slot[t_cur].flags |= NS_BUF_CHANGED;
+              txring->slot[t_cur].buf_idx = rxring->slot[r_cur].buf_idx;
+              txring->slot[t_cur].len = pktsizelen;
+              txring->slot[t_cur].flags |= NS_BUF_CHANGED;
 
-            rxring->slot[r_cur].buf_idx = t_buf_i;
-            rxring->slot[r_cur].flags = NS_BUF_CHANGED;
+              rxring->slot[r_cur].buf_idx = t_buf_i;
+              rxring->slot[r_cur].flags = NS_BUF_CHANGED;
 
-            txring->head = txring->cur = nm_ring_next(txring, t_cur);
-            sent = 1;
+              txring->head = txring->cur = nm_ring_next(txring, t_cur);
+              sent = 1;
 #ifdef DEBUG
-            printf("ok.\n");
+              printf("ok.\n");
 #endif
+            }
           }
         }
-      }
 
-      rxring->head = rxring->cur = nm_ring_next(rxring, r_cur);
-      swapto(nm_desc_rx, !is_hostring, &rxring->slot[r_cur]);
+        rxring->head = rxring->cur = nm_ring_next(rxring, r_cur);
+        swapto(nm_desc_rx, !is_hostring, &rxring->slot[r_cur]);
+      }
     }
   }
 
