@@ -11,10 +11,13 @@
 #include <netinet/udp.h>
 #include <arpa/inet.h>
 #include <sys/time.h>
+#include <signal.h>
 
 #define CONFIG_FILE "config.txt"
 #define MAX_LINE 1024
 #define MAX_STR 128
+
+static int caught_signal = 0;
 
 struct nm_desc *nm_desc_rx, *nm_desc_tx;
 
@@ -29,6 +32,24 @@ struct rule_box {
   struct rule_dic rule_dics[MAX_LINE];
   size_t rule_num;
 };
+
+void sigcatch(int sig) {
+  if (sig == SIGINT) {
+    printf("Ctrl-C interrupted\n");
+    if (caught_signal) {
+      printf("Double ctrl C -- exit.\n");
+      exit(-1);
+    }
+    caught_signal = 1;
+  }
+}
+
+void set_signal(int sig) {
+  if (signal(sig, sigcatch) == SIG_ERR) {
+    perror("signal");
+    exit(-1);
+  }
+}
 
 void printAllRules(struct rule_box *rules) {
   int i;
@@ -106,7 +127,6 @@ void change_ip_addr(char* pkt, struct in_addr dst) {
   struct ip *ip;
   struct ether_header *ether;
   struct udphdr *udp;
-  struct in_addr src;
 
   ether = (struct ether_header *)pkt;
   ip = (struct ip *)(pkt + sizeof(struct ether_header));
@@ -156,18 +176,30 @@ int change_ip_by_rule(char* pkt, struct rule_box *rules) {
 }
 
 int main(int argc, char* argv[]) {
-  unsigned int r_cur, t_cur, i, t_i, is_hostring, t_buf_i;
+  unsigned int r_cur, t_cur, i, t_i, t_buf_i;
   int sent = 0, pktsizelen, idx = 0, rule_num = 0;
+  unsigned int recv_num = 0, sent_num = 0;
   char *buf, *payload;
   char conf_buf[MAX_STR];
   struct rule_box *rules;
   struct rule_dic rule_dics[MAX_LINE];
-  struct netmap_ring *rxring, *txring;
+  struct netmap_ring *rxring, *txring, *pending_txring;
   struct pollfd pollfd[2];
   struct ether_header *ether;
   struct ip *ip;
-  struct udphdr *udp;
   FILE *conf;
+
+  printf("OPTIONS:\n");
+#ifdef DEBUG
+  printf("DEBUG\n");
+#endif
+#ifdef ONLY_RECV
+  printf("ONLY RECV\n");
+#endif
+#ifdef NOT_PENDING_TX
+  printf("NOT PENDING TX\n");
+#endif
+  printf("-----------\n");
 
   /* config file loading */
   if ((conf = fopen(CONFIG_FILE, "r")) == NULL) {
@@ -213,22 +245,25 @@ int main(int argc, char* argv[]) {
 
   printAllRules(rules);
 
-  nm_desc_rx = nm_open("netmap:ix1*", NULL, 0, NULL);
+  set_signal(SIGINT);
+
+  nm_desc_rx = nm_open("netmap:ix1", NULL, 0, NULL);
   nm_desc_tx = nm_open("netmap:ix0", NULL, NM_OPEN_NO_MMAP, nm_desc_rx);
+  pollfd[0].fd = nm_desc_rx->fd;
+  pollfd[0].events = POLLIN;
+  pollfd[1].fd = nm_desc_tx->fd;
+  pollfd[1].events = POLLOUT;
+
+  printf("Ready.\n");
+
   for (;;) {
-    pollfd[0].fd = nm_desc_rx->fd;
-    pollfd[0].events = POLLIN;
-    pollfd[1].fd = nm_desc_tx->fd;
-    pollfd[1].events = POLLOUT;
-    poll(pollfd, 2, 100);
+    poll(pollfd, 2, 3000);
 
-    for (i = nm_desc_rx->first_rx_ring; i <= nm_desc_rx->last_rx_ring; i++) {
-
-      is_hostring = (i == nm_desc_rx->last_rx_ring);
+    for (i = nm_desc_rx->first_rx_ring; i <= nm_desc_rx->last_rx_ring && !caught_signal; i++) {
 
       rxring = NETMAP_RXRING(nm_desc_rx->nifp, i);
 
-      while(!nm_ring_empty(rxring)) {
+      while(!nm_ring_empty(rxring) && !caught_signal) {
 
         r_cur = rxring->cur;
         buf = NETMAP_BUF(rxring, rxring->slot[r_cur].buf_idx);
@@ -237,10 +272,6 @@ int main(int argc, char* argv[]) {
         ether = (struct ether_header *)buf;
 
         if(ntohs(ether->ether_type) == ETHERTYPE_ARP) {
-#ifdef DEBUG
-          printf("This is ARP.\n");
-#endif
-          swapto(nm_desc_rx, !is_hostring, &rxring->slot[r_cur]);
           rxring->head = rxring->cur = nm_ring_next(rxring, r_cur);
           continue;
         }
@@ -251,14 +282,24 @@ int main(int argc, char* argv[]) {
 #ifdef DEBUG
           printHex(buf, pktsizelen);
 #endif
+          ++recv_num;
           sent = 0;
-          udp = (struct udphdr *)payload;
+#ifndef ONLY_RECV
           if (change_ip_by_rule(buf, rules)) {
-            for (t_i = nm_desc_tx->first_tx_ring; t_i <= nm_desc_tx->last_tx_ring && !sent; ++t_i) {
+            for (t_i = nm_desc_tx->first_tx_ring; t_i <= nm_desc_tx->last_tx_ring; ++t_i) {
               txring = NETMAP_TXRING(nm_desc_tx->nifp, t_i);
 
-              if (nm_ring_empty(txring))
+              if (nm_ring_empty(txring)) {
+#ifndef NOT_PENDING_TX
+                if (t_i == nm_desc_tx->last_tx_ring) {
+                  pending_txring = NETMAP_TXRING(nm_desc_tx->nifp, nm_desc_tx->first_tx_ring);
+                  while(nm_tx_pending(pending_txring)) {
+                    ioctl(nm_desc_tx->fd, NIOCTXSYNC, NULL);
+                  }
+                }  
+#endif
                 continue;
+              }
 
               t_cur = txring->cur;
 
@@ -273,18 +314,35 @@ int main(int argc, char* argv[]) {
 
               txring->head = txring->cur = nm_ring_next(txring, t_cur);
               sent = 1;
+              ++sent_num;
+              break;
 #ifdef DEBUG
               printf("ok.\n");
 #endif
             }
           }
+#endif
         }
 
         rxring->head = rxring->cur = nm_ring_next(rxring, r_cur);
-        swapto(nm_desc_rx, !is_hostring, &rxring->slot[r_cur]);
       }
+    }
+
+    if (caught_signal) {
+#ifndef ONLY_RECV
+      while(nm_tx_pending(txring)) {
+        ioctl(nm_desc_tx->fd, NIOCTXSYNC, NULL);
+      }
+#endif
+      printf("finish.\n");
+      printf("Recv: %d\nSent: %d\n", recv_num, sent_num);
+      sleep(2);
+      break;
     }
   }
 
+  free(rules);
+  nm_close(nm_desc_rx);
+  nm_close(nm_desc_tx);
   return 0;
 }
