@@ -118,7 +118,7 @@ void change_ip_addr(char* pkt, struct in_addr dst) {
   ether->ether_shost[2] = 0xba;
   ether->ether_shost[3] = 0x92;
   ether->ether_shost[4] = 0xcb;
-  ether->ether_shost[5] = 0xd5;
+  ether->ether_shost[5] = 0xd4;
   // 90:e2:ba:5d:8f:cd
   ether->ether_dhost[0] = 0x90;
   ether->ether_dhost[1] = 0xe2;
@@ -146,7 +146,7 @@ int change_ip_by_rule(char* pkt, struct rule_box *rules) {
 #ifdef DEBUG
       printf("match\n");
 #endif
-      change_ip_addr(pkt, rule_dics[i].srcaddr);
+      change_ip_addr(pkt, rule_dics[i].dstaddr);
       matched = 1;
       break;
     }
@@ -163,7 +163,7 @@ int main(int argc, char* argv[]) {
   struct rule_box *rules;
   struct rule_dic rule_dics[MAX_LINE];
   struct netmap_ring *rxring, *txring;
-  struct pollfd pollfd[1];
+  struct pollfd pollfd[2];
   struct ether_header *ether;
   struct ether_arp *arp;
   struct ip *ip;
@@ -217,9 +217,11 @@ int main(int argc, char* argv[]) {
   nm_desc_rx = nm_open("netmap:ix1*", NULL, 0, NULL);
   nm_desc_tx = nm_open("netmap:ix0", NULL, NM_OPEN_NO_MMAP, nm_desc_rx);
   for(;;){
-    pollfd[0].fd = nm_desc->fd;
+    pollfd[0].fd = nm_desc_rx->fd;
     pollfd[0].events = POLLIN;
-    poll(pollfd, 1, 100);
+    pollfd[1].fd = nm_desc_tx->fd;
+    pollfd[1].events = POLLOUT;
+    poll(pollfd, 2, 100);
 
     for (i = nm_desc_rx->first_rx_ring; i <= nm_desc_rx->last_rx_ring; i++) {
 
